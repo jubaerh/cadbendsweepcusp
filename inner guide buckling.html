@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airway Branching: Geometric Buckling Simulator</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: #333;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: row;
+            overflow: hidden;
+            width: 900px;
+            max-width: 100%;
+        }
+        .controls {
+            padding: 30px;
+            background: #fafafa;
+            border-right: 1px solid #ddd;
+            width: 320px;
+            flex-shrink: 0;
+        }
+        .controls h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: #2c3e50;
+        }
+        .control-group {
+            margin-bottom: 25px;
+        }
+        .control-group label {
+            display: flex;
+            justify-content: space-between;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .control-group input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+        }
+        .toggle-group {
+            background: #fff;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+        }
+        .toggle-group input {
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+        }
+        .toggle-group label {
+            cursor: pointer;
+            font-weight: bold;
+            color: #27ae60;
+            margin: 0;
+        }
+        .info-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #e8f4fd;
+            border-left: 4px solid #3498db;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        .info-box span {
+            font-weight: bold;
+            color: #e74c3c;
+        }
+        .safe-text { color: #27ae60 !important; }
+        
+        .visualization {
+            flex-grow: 1;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #ffffff;
+            position: relative;
+        }
+        canvas {
+            border: 1px solid #f0f0f0;
+            background: #fff;
+            border-radius: 8px;
+        }
+        .status-badge {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .status-fail {
+            background: #fadbd8;
+            color: #c0392b;
+        }
+        .status-safe {
+            background: #d5f5e3;
+            color: #27ae60;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="controls">
+        <h2>Geometry Parameters</h2>
+        
+        <div class="control-group">
+            <label>Parent Radius (Pr) <span id="val-pr">20</span></label>
+            <input type="range" id="pr" min="10" max="40" value="20" step="1">
+        </div>
+        
+        <div class="control-group">
+            <label>Branch Angle (&theta;) <span id="val-theta">45&deg;</span></label>
+            <input type="range" id="theta" min="15" max="90" value="45" step="1">
+        </div>
+        
+        <div class="control-group">
+            <label>Sweep Radius (Rs) <span id="val-rs">15</span></label>
+            <input type="range" id="rs" min="5" max="100" value="15" step="1">
+        </div>
+
+        <div class="toggle-group">
+            <input type="checkbox" id="safety-fix">
+            <label for="safety-fix">Apply 1.05x Safety Fix</label>
+        </div>
+
+        <div class="info-box">
+            Min required radius to prevent buckling:<br>
+            Rs &ge; Pr / sin(&theta;)<br>
+            Current Threshold: <span id="val-threshold">28.3</span>
+        </div>
+    </div>
+
+    <div class="visualization">
+        <div id="status" class="status-badge status-fail">Buckling / Cusp Detected</div>
+        <canvas id="canvas" width="500" height="500"></canvas>
+    </div>
+</div>
+
+<script>
+    // Get DOM Elements
+    const inputPr = document.getElementById('pr');
+    const inputTheta = document.getElementById('theta');
+    const inputRs = document.getElementById('rs');
+    const toggleSafety = document.getElementById('safety-fix');
+    
+    const valPr = document.getElementById('val-pr');
+    const valTheta = document.getElementById('val-theta');
+    const valRs = document.getElementById('val-rs');
+    const valThreshold = document.getElementById('val-threshold');
+    const statusBadge = document.getElementById('status');
+    
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Drawing scale factor to fit canvas nicely
+    const SCALE = 3.5;
+
+    function draw() {
+        // 1. Read Inputs
+        let Pr = parseFloat(inputPr.value);
+        let thetaDeg = parseFloat(inputTheta.value);
+        let Rs = parseFloat(inputRs.value);
+        let applyFix = toggleSafety.checked;
+
+        // 2. Mathematical calculations
+        let thetaRad = thetaDeg * (Math.PI / 180);
+        let sinTheta = Math.sin(thetaRad);
+        let Rs_min_absolute = Pr / sinTheta;
+        let Rs_safe = Rs_min_absolute * 1.05;
+
+        // Apply safety override if checked
+        if (applyFix) {
+            if (Rs < Rs_safe) {
+                Rs = Rs_safe;
+                inputRs.value = Rs.toFixed(1); // Update slider position
+            }
+            inputRs.min = Rs_safe.toFixed(1); // Lock slider minimum
+        } else {
+            inputRs.min = 5; // Unlock slider
+        }
+
+        let isSafe = Rs >= Rs_min_absolute;
+
+        // 3. Update UI text
+        valPr.innerText = Pr;
+        valTheta.innerHTML = thetaDeg + "&deg;";
+        valRs.innerText = Rs.toFixed(1);
+        valThreshold.innerText = Rs_min_absolute.toFixed(1);
+        
+        if (applyFix) {
+            valThreshold.innerHTML = `${Rs_safe.toFixed(1)} <br><small>(Safety margin applied)</small>`;
+            valThreshold.className = "safe-text";
+        } else {
+            valThreshold.className = "";
+        }
+
+        if (isSafe) {
+            statusBadge.innerText = "Smooth Geometry";
+            statusBadge.className = "status-badge status-safe";
+        } else {
+            statusBadge.innerText = "Buckling / Cusp Detected";
+            statusBadge.className = "status-badge status-fail";
+        }
+
+        // 4. Draw on Canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+        
+        // Move origin to center-left of canvas
+        ctx.translate(150, canvas.height - 150);
+        // Flip Y axis so positive is UP (standard math coordinates)
+        ctx.scale(1, -1);
+
+        // Styling defaults
+        ctx.lineWidth = 2 * SCALE;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // A. Draw Parent Tube (Vertical)
+        ctx.strokeStyle = '#333';
+        ctx.beginPath();
+        ctx.moveTo(-Pr * SCALE, -100 * SCALE);
+        ctx.lineTo(-Pr * SCALE, 0);
+        ctx.moveTo(Pr * SCALE, -100 * SCALE);
+        ctx.lineTo(Pr * SCALE, 0);
+        ctx.stroke();
+
+        // Draw Centerline for parent
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 1.5 * SCALE;
+        ctx.setLineDash([5 * SCALE, 5 * SCALE]);
+        ctx.beginPath();
+        ctx.moveTo(0, -100 * SCALE);
+        ctx.lineTo(0, 0);
+        ctx.stroke();
+        ctx.setLineDash([]); // reset dash
+
+        // B. Calculate and Draw Branch
+        let cx = Rs * SCALE;
+        let cy = 0;
+        
+        // Arrays to hold points for straight extensions later
+        let lastCl, lastOut, lastInn;
+
+        // Draw the curved sweep
+        let steps = 50;
+        
+        // Outer Wall (Black)
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2 * SCALE;
+        ctx.beginPath();
+        for(let i = 0; i <= steps; i++) {
+            let alpha = (i / steps) * thetaRad;
+            let x = cx - (Rs + Pr) * SCALE * Math.cos(alpha);
+            let y = cy + (Rs + Pr) * SCALE * Math.sin(alpha);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            if (i === steps) lastOut = {x, y};
+        }
+        ctx.stroke();
+
+        // Centerline (Dashed)
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 1.5 * SCALE;
+        ctx.setLineDash([5 * SCALE, 5 * SCALE]);
+        ctx.beginPath();
+        for(let i = 0; i <= steps; i++) {
+            let alpha = (i / steps) * thetaRad;
+            let x = cx - Rs * SCALE * Math.cos(alpha);
+            let y = cy + Rs * SCALE * Math.sin(alpha);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            if (i === steps) lastCl = {x, y};
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Inner Wall (Red if buckling, Green if safe)
+        ctx.strokeStyle = isSafe ? '#27ae60' : '#e74c3c';
+        ctx.lineWidth = 2.5 * SCALE;
+        ctx.beginPath();
+        for(let i = 0; i <= steps; i++) {
+            let alpha = (i / steps) * thetaRad;
+            let x = cx - (Rs - Pr) * SCALE * Math.cos(alpha);
+            let y = cy + (Rs - Pr) * SCALE * Math.sin(alpha);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            if (i === steps) lastInn = {x, y};
+        }
+        ctx.stroke();
+
+        // C. Draw Straight Extensions after the turn
+        let extLen = 50 * SCALE;
+        let dx = Math.sin(thetaRad);
+        let dy = Math.cos(thetaRad);
+
+        // Outer extension
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2 * SCALE;
+        ctx.beginPath();
+        ctx.moveTo(lastOut.x, lastOut.y);
+        ctx.lineTo(lastOut.x + extLen * dx, lastOut.y + extLen * dy);
+        ctx.stroke();
+
+        // Center extension
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 1.5 * SCALE;
+        ctx.setLineDash([5 * SCALE, 5 * SCALE]);
+        ctx.beginPath();
+        ctx.moveTo(lastCl.x, lastCl.y);
+        ctx.lineTo(lastCl.x + extLen * dx, lastCl.y + extLen * dy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Inner extension
+        ctx.strokeStyle = isSafe ? '#27ae60' : '#e74c3c';
+        ctx.lineWidth = 2.5 * SCALE;
+        ctx.beginPath();
+        ctx.moveTo(lastInn.x, lastInn.y);
+        ctx.lineTo(lastInn.x + extLen * dx, lastInn.y + extLen * dy);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    // Add Event Listeners
+    inputPr.addEventListener('input', draw);
+    inputTheta.addEventListener('input', draw);
+    inputRs.addEventListener('input', draw);
+    toggleSafety.addEventListener('change', draw);
+
+    // Initial Draw
+    draw();
+</script>
+
+</body>
+</html>
